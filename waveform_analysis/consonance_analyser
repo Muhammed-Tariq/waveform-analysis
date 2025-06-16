@@ -1,0 +1,254 @@
+import argparse
+from pathlib import Path
+import numpy as np
+from scipy.io import wavfile
+import matplotlib.pyplot as plt
+import subprocess
+from fractions import Fraction
+
+FPS = 4                       # FPS of the visualiser (default 4 = 0.25s per frame)
+TOP_NOTES = 3                 # Only allow n notes to be displayed on the visualisation
+WINDOW_SEC = 0.25             # "Scrolling window" size
+MIN_HZ_SEPARATION = 16        # Notes that are less than n Hz close together do not show up
+FREQ_MIN, FREQ_MAX = 10, 2048 # Minimum and maximum frequency that will show on the visualisation
+MIN_WEIGHT = 0.30             # Minimum weight that will have ratios calculated for
+MIN_REL_AMP      = 0.05       # Keep bins ≥ 5 % of frame max  (≈ -26 dB)
+HARM_TOL_CENTS   = 6          # Treat ±n ¢ as the same harmonic
+MAX_HARMONIC_NUM = 6          # Check up to the nth harmonic
+CENTS_TOL        = 12         # maximum allowed tuning error
+MAX_DEN_SEARCH   = 32         # how far we search (32 is still cheap)
+MAX_PRINT = 15
+
+LOG2 = np.log2
+NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
+
+def freq_to_note(f):
+    if f == 0: return "—"
+    n = 69 + 12*np.log2(f/440.0)
+    name = NOTE_NAMES[int(round(n)) % 12]
+    octave = int(round(n)/12 - 1)
+    return f"{name}{octave}"
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument(
+    "wav",
+    nargs="?",
+    default=r"S:\Downloads\2025-06-16 17-55-43.wav",
+    help="Path to the .wav file (default: this file)"
+    )
+
+    p.add_argument(
+        "outdir",
+        nargs="?",
+        default=r"S:\Downloads\Test",
+        help="Folder that will receive the PNGs (default: this folder)"
+    )
+    args = p.parse_args()
+
+    out = Path(args.outdir) 
+    out.mkdir(parents=True, exist_ok=True)
+    fs, data = wavfile.read(args.wav)
+    audio = data if data.ndim==1 else data[:,0]
+
+    win = int(fs*WINDOW_SEC)
+    freqs = np.fft.rfftfreq(win, 1/fs)
+    total_sec = len(audio) / fs
+    samples_per_frame = int(fs / FPS)
+
+    frame_count = int(total_sec * FPS)
+    plt.switch_backend("Agg")
+    fig, ax = plt.subplots(figsize=(12.8, 7.2), dpi=100)
+    line, = ax.plot(freqs, np.zeros_like(freqs))
+    ax.set_xlim(FREQ_MIN, FREQ_MAX)
+    ax.set_ylim(0, 1.05)
+    title = ax.set_title("")
+    note_texts = [
+        ax.text(0, 0.9 - k*0.07, "",
+                ha="center", va="bottom", fontsize=14)
+        for k in range(TOP_NOTES)
+    ]
+    
+    print(f"Rendering {frame_count} frames …")
+
+    # Global consonance counters
+    total_w_complexity = 0.0
+    total_w = 0.0
+    total_pairs= 0
+
+    for i in range(frame_count):
+        seg = audio[i*samples_per_frame : i*samples_per_frame + win]
+        if len(seg) < win:
+            seg = np.pad(seg, (0, win - len(seg)))
+
+        # FFT + note detection (TOP_NOTES peaks)
+        mag = np.abs(np.fft.rfft(seg * np.hanning(win)))
+
+        # Collect local-max peaks that are loud enough
+        cents = lambda ratio: 1200 * np.log2(ratio)
+
+        raw_peaks = []                               # (freq, name, weight)
+        max_amp   = mag.max() or 1.0
+        for idx in range(1, len(mag) - 1):
+            amp = mag[idx]
+            if amp < MIN_REL_AMP * max_amp:
+                continue
+            if amp < mag[idx - 1] or amp < mag[idx + 1]:
+                continue
+
+            freq   = freqs[idx]
+            name   = freq_to_note(freq)
+            weight = amp / max_amp
+            raw_peaks.append((freq, name, weight))
+
+        note_list = [(f, n, w) for f, n, w in raw_peaks if w >= MIN_WEIGHT]
+
+        if len(note_list) < 2:
+            continue
+
+        # Optional: print it
+        # print(f"t={i/FPS:.2f}s  notes={note_list}")
+
+        pair_ratios = []
+
+        for a in range(len(note_list)):
+            f1, n1, w1 = note_list[a]
+            for b in range(a + 1, len(note_list)):
+                f2, n2, w2 = note_list[b]
+
+                if n1 == n2:
+                    continue
+
+                if f1 >= f2:
+                    f_hi, n_hi, w_hi, f_lo, n_lo, w_lo = f1, n1, w1, f2, n2, w2
+                else:
+                    f_hi, n_hi, w_hi, f_lo, n_lo, w_lo = f2, n2, w2, f1, n1, w1
+
+                raw_ratio  = f_hi / f_lo
+                raw_pair   = f"{int(round(f_hi))}:{int(round(f_lo))}"
+
+                best_frac  = None
+                cents_err  = None
+
+                for d in range(1, MAX_DEN_SEARCH + 1):
+                    n = round(raw_ratio * d) 
+                    if n == 0:
+                        continue
+                    frac       = Fraction(n, d)
+                    approx_val = frac.numerator / frac.denominator
+                    cents_off  = 1200 * np.log2(raw_ratio / approx_val)
+
+                    if abs(cents_off) <= CENTS_TOL:
+                        best_frac = frac
+                        cents_err = cents_off
+                        break
+
+                if best_frac is None:
+                    continue
+
+                relevance  = (w_hi * w_lo) ** 0.5
+                pair_complexity   = best_frac.numerator + best_frac.denominator
+                total_w_complexity += relevance * pair_complexity
+                total_w            += relevance
+                total_pairs        += 1
+
+
+                is_harmonic = any(
+                    abs(1200 * np.log2(raw_ratio / k)) < HARM_TOL_CENTS
+                    for k in range(2, MAX_HARMONIC_NUM + 1)
+                )
+
+                pair_ratios.append((
+                    (n_lo, n_hi),                        # Notes
+                    raw_pair,                            # e.g. "208:76"
+                    f"{best_frac.numerator}:{best_frac.denominator}",
+                    cents_err,
+                    relevance,
+                    is_harmonic
+                ))
+
+
+        # Keep only the loudest MAX_PRINT pairs
+        pair_ratios.sort(key=lambda x: x[4], reverse=True)
+        pair_ratios = pair_ratios[:MAX_PRINT]
+
+        # Print intervals (optional)
+        for (n_lo, n_hi), raw_str, simp_str, cents, rel, flag in pair_ratios:
+            err_txt = f"{cents:+5.1f} ¢"
+            tag     = "  (harmonic)" if flag else ""
+            print(f"t={i/FPS:.2f}s  {n_lo} – {n_hi:<3} "
+                f"raw={raw_str:<9} ≈ {simp_str:<4}  "
+                f"err={err_txt:<8}  w={rel:.2f}{tag}")
+        # print(len(note_list))
+
+        # Find the strongest peaks, but never closer than MIN_HZ_SEPARATION Hz
+        pairs = sorted(enumerate(mag), key=lambda x: x[1], reverse=True)
+        peaks = []
+        for idx, amp in pairs:
+            f     = freqs[idx]
+            label = freq_to_note(f)
+
+            # Skip if too close to an already-kept peak
+            if any(abs(f - p[0]) < MIN_HZ_SEPARATION for p in peaks):
+                continue
+
+            peaks.append((f, label))
+            if len(peaks) == TOP_NOTES:
+                break
+
+        # Update the reusable figure
+        norm_mag = mag / mag.max()
+        line.set_ydata(norm_mag)
+
+        current_time = i / FPS
+        main_label   = peaks[0][1] if peaks else "—"
+        title.set_text(f"{Path(args.wav).name} – t={current_time:.1f}s • note: {main_label}")
+
+        # Update/hide each text annotation
+        for k, txt in enumerate(note_texts):
+            if k < len(peaks):
+                f, lbl = peaks[k]
+                txt.set_text(lbl)
+                txt.set_position((f, 0.9 - k*0.07))
+            else:
+                txt.set_text("")
+
+        fig.savefig(out / f"frame_{i:04d}.png")
+
+    plt.close(fig)
+
+
+    print("Building MP4...")
+
+    ffmpeg_exe = r"S:\Downloads\ffmpeg-7.1.1-full_build\ffmpeg-7.1.1-full_build\bin\ffmpeg.exe"
+
+    # Pattern must match the filenames written earlier, e.g. frame_0000.png
+    frames_pattern = str(out / "frame_%04d.png")
+    audio_path     = str(args.wav)
+    output_mp4     = str(out / "spectrum.mp4")
+
+    cmd = [
+        ffmpeg_exe, "-y",
+        "-framerate", str(FPS),
+        "-i", frames_pattern,
+        "-i", audio_path,
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-shortest",
+        output_mp4
+    ]
+
+    subprocess.run(cmd, check=True)
+    print(f"Successfully created {output_mp4}")
+    # Weighted consonance summary
+    if total_w:
+        consonance_score = total_w_complexity / total_w
+        print(f"\nWeighted consonance score (avg num+den, w-weighted): "
+            f"{consonance_score:.2f}")
+    else:
+        print("\nNo intervals passed the filters; no consonance score computed.")
+    # ───────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    main()
