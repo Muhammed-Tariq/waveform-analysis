@@ -29,7 +29,7 @@ def freq_to_note(f):
     octave = int(round(n)/12 - 1)
     return f"{name}{octave}"
 
-def main():
+def main(wav_path):
     p = argparse.ArgumentParser()
     p.add_argument(
     "wav",
@@ -48,7 +48,7 @@ def main():
 
     out = Path(args.outdir) 
     out.mkdir(parents=True, exist_ok=True)
-    fs, data = wavfile.read(args.wav)
+    fs, data = wavfile.read(wav_path)
     audio = data if data.ndim==1 else data[:,0]
 
     win = int(fs*WINDOW_SEC)
@@ -202,7 +202,7 @@ def main():
 
         current_time = i / FPS
         main_label   = peaks[0][1] if peaks else "—"
-        title.set_text(f"{Path(args.wav).name} – t={current_time:.1f}s • note: {main_label}")
+        title.set_text(f"{Path(wav_path).name} – t={current_time:.1f}s • note: {main_label}")
 
         # Update/hide each text annotation
         for k, txt in enumerate(note_texts):
@@ -224,7 +224,7 @@ def main():
 
     # Pattern must match the filenames written earlier, e.g. frame_0000.png
     frames_pattern = str(out / "frame_%04d.png")
-    audio_path     = str(args.wav)
+    audio_path     = str(wav_path)
     output_mp4     = str(out / "spectrum.mp4")
 
     cmd = [
@@ -241,6 +241,7 @@ def main():
 
     subprocess.run(cmd, check=True)
     print(f"Successfully created {output_mp4}")
+
     # Weighted consonance summary
     if total_w:
         consonance_score = total_w_complexity / total_w
@@ -248,7 +249,7 @@ def main():
             f"{consonance_score:.2f}")
     else:
         print("\nNo intervals passed the filters; no consonance score computed.")
-    # ───────────────────────────────────────────────────────
+    return float(consonance_score)
 
 if __name__ == "__main__":
     main()

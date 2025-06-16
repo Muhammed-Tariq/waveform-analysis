@@ -1,4 +1,3 @@
-from pathlib import Path
 from scipy.fftpack import fft
 from scipy.io import wavfile
 import os
@@ -7,20 +6,6 @@ import librosa
 import librosa.display
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
-
-# Upload audio files
-
-def getAudioFiles(root, extension):
-    files = [p for p in root.rglob("*") if p.suffix.lower() in extension]
-    print(f"Found {len(files)} audio files.")
-    return files
-
-randomRoot = Path("S:\Downloads\Music\Random")
-preferredRoot = Path("S:\Downloads\Music\Preferred")
-extension = (".wav",)
-
-randomFiles = getAudioFiles(randomRoot, extension)
-preferredFiles = getAudioFiles(preferredRoot, extension)
 
 # Obtain length
 

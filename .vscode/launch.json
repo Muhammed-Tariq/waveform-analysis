@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run waveform-analysis package",
+      "type": "debugpy",
+      "request": "launch",
+
+      // <-- THIS is the key line
+      "module": "waveform_analysis.main",
+
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"     // project root
+    }
+  ]
+}
