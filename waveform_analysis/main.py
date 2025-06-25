@@ -73,11 +73,13 @@ def calculateSimilarity(cons, length, amp, fluct, dynRange):
         lengthScore = float(lengthScore) * LENGTH_WEIGHTING
         consScore   = float(consScore) * DISSONANCE_WEIGHTING
 
-    return float(
-        ampScore + fluctScore + dynRangeScore + lengthScore + consScore)
+    return float(ampScore + 
+                 fluctScore + 
+                 dynRangeScore + 
+                 lengthScore + 
+                 consScore)
 
-prefSimilarityScores = [
-    calculateSimilarity(cons, length, amp, fluct, dyn)
+prefSimilarityScores = [calculateSimilarity(cons, length, amp, fluct, dyn)
     for cons, length, amp, fluct, dyn in zip(
         preferredConsonanceList,
         prefLengths,
@@ -89,9 +91,8 @@ prefSimilarityScores = [
 
 avgPreferredSimilarity = sum(prefSimilarityScores)/len(prefSimilarityScores)
 
-randSimilarityScores = [
-    calculateSimilarity(cons, length, amp, fluct, dyn)
-    for cons, length, amp, fluct, dyn in zip(
+randSimilarityScores = [calculateSimilarity(cons, length, amp, fluct, dyn)
+for cons, length, amp, fluct, dyn in zip(
         randConsonanceList,
         randLengths,
         randAvgAmp,
@@ -102,14 +103,13 @@ randSimilarityScores = [
 
 ranked_pairs = sorted(
     (
-        (fname, abs(score - avgPreferredSimilarity))      # (Path, gap)
+        (fname, abs(score - avgPreferredSimilarity))
         for fname, score in zip(randomFiles, randSimilarityScores)
     ),
-    key=lambda t: t[1]                                    # sort by gap
+    key=lambda t: t[1]
 )
 
 print("\nRandom songs ranked (closest to farthest):")
 for pos, (fname, gap) in enumerate(ranked_pairs, 1):
-    # fname.name  → just the file name  |  str(fname) → full path
     print(f"{pos:>2}. {fname.name:<50}  gap={gap:.4f}")
 
