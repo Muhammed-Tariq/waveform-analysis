@@ -9,32 +9,27 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.io import wavfile
 
-# ---------------------------------------------------------------------------
-# Tunable constants (behaviour kept identical to the original script)
-# ---------------------------------------------------------------------------
-FPS = 4                     # visualiser FPS (default 4 ≃ 0.25 s per frame)
-TOP_NOTES = 3               # maximum notes displayed on the visualisation
-WINDOW_SEC = 0.25           # scrolling‑window length (seconds)
-MIN_HZ_SEPARATION = 16      # suppress peaks closer than this (Hz)
+# Tunable constants
+FPS = 4                     # Visualiser FPS (default 4 = 0.25s per frame)
+TOP_NOTES = 3               # Maximum notes displayed on the visualisation
+WINDOW_SEC = 0.25           # Scrolling‑window length (seconds)
+MIN_HZ_SEPARATION = 16      # Ignore peaks closer than this (Hz)
 FREQ_MIN, FREQ_MAX = 10, 2048
-MIN_WEIGHT = 0.20           # ignore peaks <20 % of frame max when finding ratios
+MIN_WEIGHT = 0.20           # Ignore peaks <20 % of frame max when finding ratios
 MIN_REL_AMP = 0.05          # ignore FFT bins <5 % of frame max  (≈ −26 dB)
-HARM_TOL_CENTS = 6          # treat ±6 ¢ as the same harmonic
-MAX_HARMONIC_NUM = 6        # search up to n‑th harmonic for flagging
-CENTS_TOL = 6               # max tuning error (¢) allowed for ratio simplification
-MAX_DEN_SEARCH = 32         # how far we search for denominator when simplifying
-MAX_PRINT = 15              # pairs kept for optional printing
+HARM_TOL_CENTS = 6          # Treat ±N ¢ as the same harmonic
+MAX_HARMONIC_NUM = 6        # Search up to n‑th harmonic for flagging
+CENTS_TOL = 6               # Max error (¢) allowed for ratio simplification
+MAX_DEN_SEARCH = 32         # How far we search for denominator when simplifying
+MAX_PRINT = 15              # Pairs kept for optional printing
 
 NOTE_NAMES = [
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 ]
-LOG2 = np.log2  # tiny micro‑optimisation
+LOG2 = np.log2
 
-# ---------------------------------------------------------------------------
 # Utility helpers
-# ---------------------------------------------------------------------------
-
-def freq_to_note(freq: float) -> str:
+def freqToNote(freq: float) -> str:
     """Return closest equal‑temperament note name (e.g. 'A4')."""
     if freq <= 0:
         return "—"
@@ -49,143 +44,126 @@ def cents(ratio: float) -> float:
     """Convert a frequency ratio to cents."""
     return 1200 * LOG2(ratio)
 
-# ---------------------------------------------------------------------------
-# Main logic
-# ---------------------------------------------------------------------------
+# Main program
+def main(wavFile: str | Path) -> float:
+    """Analyse *wavFile* and return its weighted consonance score."""
+    wavFile = Path(wavFile)
 
-def main(wav_file: str | Path) -> float:
-    """Analyse *wav_file* and return its weighted consonance score."""
-    wav_file = Path(wav_file)
+    fs, data = wavfile.read(wavFile)
+    audio = data if data.ndim == 1 else data[:, 0]  # Keep left channel if stereo
 
-    # ---------------------------------------------------------------------
-    # I/O & pre‑allocation
-    # ---------------------------------------------------------------------
-    fs, data = wavfile.read(wav_file)
-    audio = data if data.ndim == 1 else data[:, 0]  # keep left channel if stereo
+    winLen = int(fs * WINDOW_SEC)
+    hannWin = np.hanning(winLen) # Pre‑computed window
+    freqs = np.fft.rfftfreq(winLen, 1 / fs)
 
-    win_len = int(fs * WINDOW_SEC)
-    hann_win = np.hanning(win_len)                  # pre‑computed window
-    freqs = np.fft.rfftfreq(win_len, 1 / fs)
+    totalFrames = int(len(audio) / fs * FPS)
+    samplesPerFrame = int(fs / FPS)
 
-    total_frames = int(len(audio) / fs * FPS)
-    samples_per_frame = int(fs / FPS)
-
-    # Prepare matplotlib figure (unchanged)
+    # Prepare matplotlib figure
     plt.switch_backend("Agg")
     fig, ax = plt.subplots(figsize=(12.8, 7.2), dpi=100)
     line, = ax.plot(freqs, np.zeros_like(freqs))
     ax.set_xlim(FREQ_MIN, FREQ_MAX)
     ax.set_ylim(0, 1.05)
     title = ax.set_title("")
-    note_texts = [
+    noteTexts = [
         ax.text(0, 0.9 - k * 0.07, "", ha="center", va="bottom", fontsize=14)
         for k in range(TOP_NOTES)
     ]
 
-    # Create a sibling folder for the (optional) visualisation frames
-    outdir = wav_file.with_suffix("").with_name(f"{wav_file.stem}_frames")
+    # Create a folder for the (optional) visualisation frames
+    outdir = wavFile.with_suffix("").with_name(f"{wavFile.stem}_frames")
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # ---------------------------------------------------------------------
     # Global consonance accumulators
-    # ---------------------------------------------------------------------
-    total_weighted_complexity = 0.0
-    total_weight = 0.0
+    totalWeightedSum = 0.0
+    totalWeight = 0.0
 
-    # ---------------------------------------------------------------------
     # Frame loop
-    # ---------------------------------------------------------------------
-    print(f"Rendering {total_frames} frames …")
-    for frame_idx in range(total_frames):
-        start = frame_idx * samples_per_frame
-        seg = audio[start:start + win_len]
-        if len(seg) < win_len:
-            seg = np.pad(seg, (0, win_len - len(seg)))
+    print(f"Rendering {totalFrames} frames …")
+    for frameIdx in range(totalFrames):
+        start = frameIdx * samplesPerFrame
+        seg = audio[start:start + winLen]
+        if len(seg) < winLen:
+            seg = np.pad(seg, (0, winLen - len(seg)))
 
-        # FFT & magnitude spectrum for this frame
-        mag = np.abs(np.fft.rfft(seg * hann_win))
+        # FFT and magnitude spectrum for this frame
+        mag = np.abs(np.fft.rfft(seg * hannWin))
         if not mag.any():
             continue
-        max_amp = mag.max()
-        if max_amp == 0:
+        maxAmp = mag.max()
+        if maxAmp == 0:
             continue
 
-        # -----------------------------------------------------------------
         # Detect local‑max peaks that are loud enough
-        # -----------------------------------------------------------------
-        raw_peaks: list[tuple[float, str, float]] = []  # (freq, note, weight)
+        rawPeaks: list[tuple[float, str, float]] = []  # (freq, note, weight)
         for idx in range(1, len(mag) - 1):
             amp = mag[idx]
-            if amp < MIN_REL_AMP * max_amp:
+            if amp < MIN_REL_AMP * maxAmp:
                 continue
             if amp < mag[idx - 1] or amp < mag[idx + 1]:
                 continue
             freq = freqs[idx]
-            raw_peaks.append((freq, freq_to_note(freq), amp / max_amp))
+            rawPeaks.append((freq, freqToNote(freq), amp / maxAmp))
 
-        note_list = [(f, n, w) for f, n, w in raw_peaks if w >= MIN_WEIGHT]
-        if len(note_list) < 2:  # need at least one interval
+        noteList = [(f, n, w) for f, n, w in rawPeaks if w >= MIN_WEIGHT]
+        if len(noteList) < 2:  # Need at least one interval
             continue
 
-        # -----------------------------------------------------------------
         # Interval processing & consonance metrics
-        # -----------------------------------------------------------------
-        for a in range(len(note_list)):
-            f1, n1, w1 = note_list[a]
-            for b in range(a + 1, len(note_list)):
-                f2, n2, w2 = note_list[b]
+        for a in range(len(noteList)):
+            f1, n1, w1 = noteList[a]
+            for b in range(a + 1, len(noteList)):
+                f2, n2, w2 = noteList[b]
                 if n1 == n2:
                     continue
 
-                # high / low assignment (simplifies later maths)
                 if f1 >= f2:
-                    f_hi, w_hi, f_lo, w_lo = f1, w1, f2, w2
+                    fHi, wHi, fLo, wLo = f1, w1, f2, w2
                 else:
-                    f_hi, w_hi, f_lo, w_lo = f2, w2, f1, w1
+                    fHi, wHi, fLo, wLo = f2, w2, f1, w1
 
-                raw_ratio = f_hi / f_lo
+                rawRatio = fHi / fLo
 
-                # Try to approximate ratio with a simple fraction within CENTS_TOL.
-                best_frac: Fraction | None = None
+                # Try to approximate ratio to a simple fraction within CENTS_TOL.
+                bestFrac: Fraction | None = None
                 for d in range(1, MAX_DEN_SEARCH + 1):
-                    n = round(raw_ratio * d)
+                    n = round(rawRatio * d)
                     if n == 0:
                         continue
                     frac = Fraction(n, d)
-                    approx_val = frac.numerator / frac.denominator
-                    if abs(cents(raw_ratio / approx_val)) <= CENTS_TOL:
-                        best_frac = frac
+                    approxVal = frac.numerator / frac.denominator
+                    if abs(cents(rawRatio / approxVal)) <= CENTS_TOL:
+                        bestFrac = frac
                         break
-                if best_frac is None:
+                if bestFrac is None:
                     continue
 
-                relevance = np.sqrt(w_hi * w_lo)  # geometric mean of weights
-                complexity = best_frac.numerator + best_frac.denominator
-                total_weighted_complexity += relevance * complexity
-                total_weight += relevance
+                relevance = np.sqrt(wHi * wLo)  # Geometric mean of weights
+                complexity = bestFrac.numerator + bestFrac.denominator
+                totalWeightedSum += relevance * complexity
+                totalWeight += relevance
 
-        # -----------------------------------------------------------------
-        # Optional visualisation (kept intact, mostly unchanged)
-        # -----------------------------------------------------------------
-        # find strongest *note* peaks for labeling, ensuring separation
-        peak_candidates = sorted(enumerate(mag), key=lambda x: x[1], reverse=True)
+        # Optional visualisation
+        # Find strongest *note* peaks for labeling, ensuring separation
+        peakCandidates = sorted(enumerate(mag), key=lambda x: x[1], reverse=True)
         peaks: list[tuple[float, str]] = []
-        for idx, _amp in peak_candidates:
+        for idx, _amp in peakCandidates:
             freq = freqs[idx]
             if any(abs(freq - p[0]) < MIN_HZ_SEPARATION for p in peaks):
                 continue
-            peaks.append((freq, freq_to_note(freq)))
+            peaks.append((freq, freqToNote(freq)))
             if len(peaks) == TOP_NOTES:
                 break
 
         # Update re‑usable figure
-        line.set_ydata(mag / max_amp)
-        current_time = frame_idx / FPS
-        main_label = peaks[0][1] if peaks else "—"
+        line.set_ydata(mag / maxAmp)
+        currentTime = frameIdx / FPS
+        mainLabel = peaks[0][1] if peaks else "—"
         title.set_text(
-            f"{wav_file.name} • t={current_time:.1f}s • note: {main_label}")
+            f"{wavFile.name} • t={currentTime:.1f}s • note: {mainLabel}")
 
-        for k, txt in enumerate(note_texts):
+        for k, txt in enumerate(noteTexts):
             if k < len(peaks):
                 f, lbl = peaks[k]
                 txt.set_text(lbl)
@@ -194,33 +172,27 @@ def main(wav_file: str | Path) -> float:
                 txt.set_text("")
 
         # Uncomment to dump PNG frames:
-        # fig.savefig(outdir / f"frame_{frame_idx:04d}.png")
+        # fig.savefig(outdir / f"frame_{frameIdx:04d}.png")
 
     plt.close(fig)
 
-    # ---------------------------------------------------------------------
     # Final weighted consonance score
-    # ---------------------------------------------------------------------
-    if not total_weight:
+    if not totalWeight:
         print("No intervals passed the filters; no consonance score computed.")
         return float("nan")
 
-    # Lower complexity ⇒ more consonant. Invert so that higher = more consonant.
-    avg_complexity = total_weighted_complexity / total_weight
-    consonance_score = 10 * (1.0 / avg_complexity)
+    # Lower complexity = more consonant. Inverted so that higher = more consonant.
+    avgWeight = totalWeightedSum / totalWeight
+    consonanceScore = 10 * (1.0 / avgWeight)
 
     print(
-        "Weighted consonance score for", Path(wav_file).stem, "(1 / avg(numerator+denominator), weight‑weighted): "
-        f"{consonance_score:.4f}")
-    return float(consonance_score)
+        "Weighted consonance score for", Path(wavFile).stem, "(1 / avg(numerator+denominator), weight‑weighted): "
+        f"{consonanceScore:.4f}")
+    return float(consonanceScore)
 
-
-# ---------------------------------------------------------------------------
-# CLI entry‑point (keeps import‑ability of ``main``)
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Compute a weighted consonance score for a .wav file.")
-    parser.add_argument("wav_file", type=Path, help="Path to input .wav file")
+    parser.add_argument("wavFile", type=Path, help="Path to input .wav file")
     args = parser.parse_args()
-    main(args.wav_file)
+    main(args.wavFile)
